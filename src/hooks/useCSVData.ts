@@ -1,7 +1,4 @@
-import { useState } from 'react';
-import Papa from 'papaparse';
-import { safeDate } from '../utils/dateUtils';
-import { processRawData, extractFilterOptions } from '../utils/dataProcessing';
+import { useState, useRef, useEffect } from 'react';
 import { 
   FilterOptions, 
   Filters, 
@@ -11,7 +8,7 @@ import {
 } from '../types';
 
 /**
- * Custom hook to handle CSV data loading and processing
+ * Custom hook to handle CSV data loading and processing using Web Worker
  */
 export const useCSVData = () => {
   const [csvData, setCsvData] = useState<ProjectData[]>([]);
@@ -32,8 +29,62 @@ export const useCSVData = () => {
     statuses: []
   });
 
+  // Create web worker ref to avoid recreating it on each render
+  const workerRef = useRef<Worker | null>(null);
+
+  // Set up worker on component mount
+  useEffect(() => {
+    // Create the worker
+    workerRef.current = new Worker(new URL('../workers/csvWorker.ts', import.meta.url), { type: 'module' });
+
+    // Set up the message handler
+    workerRef.current.onmessage = (event) => {
+      const { status, data, error: workerError } = event.data;
+
+      if (status === 'success') {
+        setCsvData(data.csvData);
+        setFilterOptions(data.filterOptions);
+        setDateRange(data.dateRange);
+
+        // Initialize selected date range to the last 3 months by default
+        const endDate = new Date();
+        const startDate = new Date();
+        startDate.setMonth(startDate.getMonth() - 3);
+        
+        // Make sure we're within the actual data range
+        const minDate = data.dateRange.min;
+        const maxDate = data.dateRange.max;
+        const finalStartDate = startDate > minDate ? startDate : minDate;
+        const finalEndDate = endDate < maxDate ? endDate : maxDate;
+        
+        setSelectedDateRange({
+          start: finalStartDate,
+          end: finalEndDate
+        });
+        
+        // Reset filters
+        setFilters({
+          region: [],
+          projectType: [],
+          lob: [],
+          status: []
+        });
+
+        setIsLoading(false);
+      } else if (status === 'error') {
+        setError(workerError);
+        setIsLoading(false);
+      }
+    };
+
+    // Clean up the worker when the component unmounts
+    return () => {
+      workerRef.current?.terminate();
+    };
+  }, []);
+
   /**
-   * Handle file upload and CSV parsing
+   * Handle file upload and CSV parsing via web worker
    */
   const handleFileUpload = (event: React.ChangeEvent<HTMLInputElement>) => {
     const file = event.target.files?.[0];
@@ -42,77 +93,15 @@ export const useCSVData = () => {
     setIsLoading(true);
     setError(null);
     
-    Papa.parse(file, {
-      header: true,
-      dynamicTyping: true,
-      skipEmptyLines: true,
-      complete: (results) => {
-        processData(results.data);
-        setIsLoading(false);
-      },
-      error: (error) => {
-        setError(`Error parsing CSV: ${error.message}`);
-        setIsLoading(false);
-      }
-    });
-  };
-
-  /**
-   * Process and prepare data after CSV parsing
-   */
-  const processData = (data: any[]) => {
-    // Clean up data
-    const cleanedData = processRawData(data);
-    setCsvData(cleanedData);
-    
-    // Extract filter options
-    const options = extractFilterOptions(cleanedData);
-    setFilterOptions(options);
-    
-    // Reset filters to empty arrays (select all by default)
-    setFilters({
-      region: [],
-      projectType: [],
-      lob: [],
-      status: []
-    });
-    
-    // Extract date range
-    const dates = cleanedData
-      .map(row => [
-        row['Kick-Off Date'], 
-        row['Testing Start'], 
-        row['Testing End'], 
-        row['Hospital Go-Live Date'], 
-        row['OH Go-Live Date']
-      ])
-      .flat()
-      .filter(Boolean)
-      .map(d => safeDate(d))
-      .filter(Boolean) as Date[];
-    
-    if (dates.length > 0) {
-      const minDate = new Date(Math.min(...dates.map(d => d.getTime())));
-      const maxDate = new Date(Math.max(...dates.map(d => d.getTime())));
-      
-      setDateRange({
-        min: minDate,
-        max: maxDate
+    if (workerRef.current) {
+      // Send the file to the worker for processing
+      workerRef.current.postMessage({
+        operation: 'parse',
+        file
       });
-      
-      // Initialize selected date range to the last 3 months by default
-      const endDate = new Date();
-      const startDate = new Date();
-      startDate.setMonth(startDate.getMonth() - 3);
-      
-      // Make sure we're within the actual data range
-      const finalStartDate = startDate > minDate ? startDate : minDate;
-      const finalEndDate = endDate < maxDate ? endDate : maxDate;
-      
-      setSelectedDateRange({
-        start: finalStartDate,
-        end: finalEndDate
-      });
+    } else {
+      setError('Web worker initialization failed');
+      setIsLoading(false);
     }
   };
 

@@ -1,13 +1,16 @@
-import React, { useState } from 'react';
+import React, { useState, lazy, Suspense } from 'react';
 import FilterBar from './filters/FilterBar';
-import OverviewTab from './tabs/OverviewTab';
-import TimelinesTab from './tabs/TimelinesTab';
-import ResourcesTab from './tabs/ResourcesTab';
-import DataQualityTab from './tabs/DataQualityTab';
-import ProjectsTab from './tabs/ProjectsTab';
-import OHGoLiveTab from './tabs/OHGoLiveTab';
 import { getFilteredData } from '../../utils/dataProcessing';
 import { useCSVData } from '../../hooks/useCSVData';
+import LazyTab from '../ui/LazyTab';
+
+// Lazy load tab components to reduce initial bundle size
+const OverviewTab = lazy(() => import('./tabs/OverviewTab'));
+const TimelinesTab = lazy(() => import('./tabs/TimelinesTab'));
+const ResourcesTab = lazy(() => import('./tabs/ResourcesTab'));
+const DataQualityTab = lazy(() => import('./tabs/DataQualityTab'));
+const ProjectsTab = lazy(() => import('./tabs/ProjectsTab'));
+const OHGoLiveTab = lazy(() => import('./tabs/OHGoLiveTab'));
 
 /**
  * Main Dashboard component that orchestrates the entire application
@@ -52,7 +55,12 @@ const Dashboard: React.FC = () => {
               <input type='file' className="hidden" accept=".csv" onChange={handleFileUpload} />
             </label>
             
-            {isLoading && <p className="mt-4 text-gray-600">Loading data...</p>}
+            {isLoading && (
+              <div className="mt-4 flex flex-col items-center">
+                <div className="animate-spin rounded-full h-10 w-10 border-b-2 border-blue-500 mb-2"></div>
+                <p className="text-gray-600">Processing data... This may take a moment for large files.</p>
+              </div>
+            )}
             {error && <p className="mt-4 text-red-500">{error}</p>}
           </div>
         </div>
@@ -125,40 +133,40 @@ const Dashboard: React.FC = () => {
           </nav>
         </div>
         
-        {/* Dashboard Content - Dynamic based on active tab */}
-        {activeTab === 'overview' && (
+        {/* Dashboard Content - Dynamic based on active tab, with lazy loading */}
+        <LazyTab isActive={activeTab === 'overview'}>
           <OverviewTab filteredData={filteredData} />
-        )}
+        </LazyTab>
         
-        {activeTab === 'timelines' && (
+        <LazyTab isActive={activeTab === 'timelines'}>
           <TimelinesTab 
             filteredData={filteredData} 
             selectedDateRange={selectedDateRange} 
             setSelectedDateRange={setSelectedDateRange}
             dateRange={dateRange}
           />
-        )}
+        </LazyTab>
         
-        {activeTab === 'resources' && (
+        <LazyTab isActive={activeTab === 'resources'}>
           <ResourcesTab filteredData={filteredData} />
-        )}
+        </LazyTab>
 
-        {activeTab === 'ohGoLive' && (
+        <LazyTab isActive={activeTab === 'ohGoLive'}>
           <OHGoLiveTab 
             filteredData={filteredData}
             selectedDateRange={selectedDateRange}
             setSelectedDateRange={setSelectedDateRange}
             dateRange={dateRange}
           />
-        )}
+        </LazyTab>
         
-        {activeTab === 'dataQuality' && (
+        <LazyTab isActive={activeTab === 'dataQuality'}>
           <DataQualityTab filteredData={filteredData} />
-        )}
+        </LazyTab>
         
-        {activeTab === 'projects' && (
+        <LazyTab isActive={activeTab === 'projects'}>
           <ProjectsTab filteredData={filteredData} />
-        )}
+        </LazyTab>
       </div>
     </div>
   );

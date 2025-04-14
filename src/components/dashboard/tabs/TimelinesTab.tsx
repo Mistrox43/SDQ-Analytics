@@ -1,11 +1,13 @@
-import React from 'react';
+import React, { useState, useEffect, useMemo } from 'react';
 import { 
   LineChart, Line, XAxis, YAxis, CartesianGrid, Tooltip, Legend, ResponsiveContainer,
   ScatterChart, Scatter, ZAxis
 } from 'recharts';
 import { safeDate } from '../../../utils/dateUtils';
-import { calculateDailyActivity, getTimelineDetailProjects } from '../../../utils/dataProcessing';
-import { ProjectData, SelectedDateRange, DateRange } from '../../../types';
+import { getTimelineDetailProjects } from '../../../utils/dataProcessing';
+import { calculateDailyActivityChunked } from '../../../utils/chunkedProcessing';
+import { ProjectData, SelectedDateRange, DateRange, DailyActivityItem } from '../../../types';
+import VirtualizedTable from '../../ui/VirtualizedTable';
 
 interface TimelinesTabProps {
   filteredData: ProjectData[];
@@ -20,11 +22,135 @@ const TimelinesTab: React.FC<TimelinesTabProps> = ({
   setSelectedDateRange,
   dateRange 
 }) => {
-  const [selectedTimelineView, setSelectedTimelineView] = React.useState<string | null>(null);
+  const [selectedTimelineView, setSelectedTimelineView] = useState<string | null>(null);
+  const [dailyActivity, setDailyActivity] = useState<DailyActivityItem[]>([]);
+  const [isCalculating, setIsCalculating] = useState<boolean>(false);
+  const [calculationProgress, setCalculationProgress] = useState<number>(0);
   
-  // Calculate timeline data
-  const dailyActivity = calculateDailyActivity(filteredData, selectedDateRange);
-  const timelineDetailProjects = getTimelineDetailProjects(filteredData, selectedDateRange);
+  // Memoize date array generation based on selected date range
+  const dateArray = useMemo(() => {
+    if (!selectedDateRange.start || !selectedDateRange.end) {
+      return [];
+    }
+    
+    // Create an array of dates within the selected range
+    const result: Date[] = [];
+    const currentDate = new Date(selectedDateRange.start);
+    const endDate = new Date(selectedDateRange.end);
+    
+    // Validate dates
+    if (isNaN(currentDate.getTime()) || isNaN(endDate.getTime())) {
+      return [];
+    }
+    
+    while (currentDate <= endDate) {
+      result.push(new Date(currentDate));
+      currentDate.setDate(currentDate.getDate() + 1);
+    }
+    
+    return result;
+  }, [selectedDateRange.start, selectedDateRange.end]);
+  
+  // Memoize timeline detail projects to avoid recalculation
+  const timelineDetailProjects = useMemo(() => 
+    getTimelineDetailProjects(filteredData, selectedDateRange),
+    [filteredData, selectedDateRange]
+  );
+  
+  // Calculate daily activity data in chunks when date range or filtered data changes
+  useEffect(() => {
+    if (dateArray.length === 0 || filteredData.length === 0) {
+      setDailyActivity([]);
+      return;
+    }
+    
+    setIsCalculating(true);
+    setCalculationProgress(0);
+    
+    // Use chunked processing for better UI responsiveness
+    calculateDailyActivityChunked(
+      filteredData, 
+      dateArray,
+      (processed, total) => {
+        setCalculationProgress(Math.floor((processed / total) * 100));
+      }
+    ).then(result => {
+      setDailyActivity(result);
+      setIsCalculating(false);
+    }).catch(error => {
+      console.error("Error calculating daily activity:", error);
+      setIsCalculating(false);
+    });
+  }, [filteredData, dateArray]);
+  
+  // Memoize scatter chart data to avoid recalculation
+  const scatterData = useMemo(() => {
+    return filteredData
+      .filter(d => d && safeDate(d['Testing Start']) && safeDate(d['Testing End']) && 
+               safeDate(d['Kick-Off Date']) && safeDate(d['OH Go-Live Date']))
+      .map(d => {
+        try {
+          const testingStart = safeDate(d['Testing Start']);
+          const testingEnd = safeDate(d['Testing End']);
+          const kickOff = safeDate(d['Kick-Off Date']);
+          const goLive = safeDate(d['OH Go-Live Date']);
+          
+          if (!testingStart || !testingEnd || !kickOff || !goLive) {
+            return null;
+          }
+          
+          const testingDuration = Math.max(1, Math.round((testingEnd.getTime() - testingStart.getTime()) / (1000 * 60 * 60 * 24)));
+          const projectDuration = Math.max(1, Math.round((goLive.getTime() - kickOff.getTime()) / (1000 * 60 * 60 * 24)));
+          
+          return {
+            name: d['Project Short Name'] || 'Unnamed Project',
+            testingDuration,
+            projectDuration,
+            status: d['Project Status'] || 'Unknown'
+          };
+        } catch (e) {
+          console.error("Error processing project data:", e);
+          return null;
+        }
+      })
+      .filter(Boolean);
+  }, [filteredData]);
+
+  // Table columns configuration for virtualized table
+  const tableColumns = [
+    { key: 'Project Short Name', header: 'Project' },
+    { key: 'Facility Name', header: 'Facility' },
+    { key: 'Project Status', header: 'Status' },
+    { 
+      key: 'timelineStatus', 
+      header: 'Timeline Status',
+      render: (value: string) => (
+        value === "Active Project" ? (
+          <span className="px-2 py-1 rounded-full text-xs font-medium bg-blue-100 text-blue-800">
+            Active Project
+          </span>
+        ) : (
+          <span className="px-2 py-1 rounded-full text-xs font-medium bg-green-100 text-green-800">
+            Active Testing
+          </span>
+        )
+      )
+    },
+    { key: 'Project Type', header: 'Type' },
+    { key: 'OH Region', header: 'Region' },
+    { key: 'Kick-Off Date', header: 'Kick-Off Date' },
+    { key: 'Testing Start', header: 'Testing Start' },
+    { key: 'Testing End', header: 'Testing End' },
+    { key: 'Hospital Go-Live Date', header: 'Hospital Go-Live' },
+    { key: 'OH Go-Live Date', header: 'OH Go-Live' },
+  ];
+  
+  // Format date labels for charts
+  const formatDateLabel = (tickItem: string) => {
+    if (!tickItem) return '';
+    const date = safeDate(tickItem);
+    return date ? date.toLocaleDateString('en-US', { month: 'short', day: 'numeric' }) : '';
+  };
 
   return (
     <div className="space-y-6">
@@ -115,7 +241,7 @@ const TimelinesTab: React.FC<TimelinesTabProps> = ({
       </div>
       
       {selectedTimelineView === 'projectDetails' ? (
-        // Detailed view of projects in the date range
+        // Detailed view of projects with virtualization
         <div className="bg-white shadow rounded-lg p-6">
           <div className="flex justify-between items-center mb-4">
             <h3 className="text-lg font-medium">
@@ -135,61 +261,12 @@ const TimelinesTab: React.FC<TimelinesTabProps> = ({
             <strong>{selectedDateRange.end?.toLocaleDateString()}</strong>
           </p>
           
-          <div className="overflow-x-auto">
-            <table className="min-w-full bg-white">
-              <thead className="bg-gray-100">
-                <tr>
-                  <th className="py-2 px-4 border-b text-left text-xs font-medium text-gray-500 uppercase tracking-wider">Project</th>
-                  <th className="py-2 px-4 border-b text-left text-xs font-medium text-gray-500 uppercase tracking-wider">Facility</th>
-                  <th className="py-2 px-4 border-b text-left text-xs font-medium text-gray-500 uppercase tracking-wider">Status</th>
-                  <th className="py-2 px-4 border-b text-left text-xs font-medium text-gray-500 uppercase tracking-wider">Timeline Status</th>
-                  <th className="py-2 px-4 border-b text-left text-xs font-medium text-gray-500 uppercase tracking-wider">Type</th>
-                  <th className="py-2 px-4 border-b text-left text-xs font-medium text-gray-500 uppercase tracking-wider">Region</th>
-                  <th className="py-2 px-4 border-b text-left text-xs font-medium text-gray-500 uppercase tracking-wider">Kick-Off Date</th>
-                  <th className="py-2 px-4 border-b text-left text-xs font-medium text-gray-500 uppercase tracking-wider">Testing Start</th>
-                  <th className="py-2 px-4 border-b text-left text-xs font-medium text-gray-500 uppercase tracking-wider">Testing End</th>
-                  <th className="py-2 px-4 border-b text-left text-xs font-medium text-gray-500 uppercase tracking-wider">Hospital Go-Live</th>
-                  <th className="py-2 px-4 border-b text-left text-xs font-medium text-gray-500 uppercase tracking-wider">OH Go-Live</th>
-                </tr>
-              </thead>
-              <tbody className="divide-y divide-gray-200">
-                {timelineDetailProjects.slice(0, 50).map((project, idx) => (
-                  <tr key={idx} className={idx % 2 === 0 ? 'bg-gray-50' : 'bg-white'}>
-                    <td className="py-2 px-4 text-sm">{project['Project Short Name']}</td>
-                    <td className="py-2 px-4 text-sm">{project['Facility Name']}</td>
-                    <td className="py-2 px-4 text-sm">{project['Project Status']}</td>
-                    <td className="py-2 px-4 text-sm">
-                      {project.timelineStatus === "Active Project" ? (
-                        <span className="px-2 py-1 rounded-full text-xs font-medium bg-blue-100 text-blue-800">
-                          Active Project
-                        </span>
-                      ) : (
-                        <span className="px-2 py-1 rounded-full text-xs font-medium bg-green-100 text-green-800">
-                          Active Testing
-                        </span>
-                      )}
-                    </td>
-                    <td className="py-2 px-4 text-sm">{project['Project Type']}</td>
-                    <td className="py-2 px-4 text-sm">{project['OH Region']}</td>
-                    <td className="py-2 px-4 text-sm">{project['Kick-Off Date']}</td>
-                    <td className="py-2 px-4 text-sm">{project['Testing Start']}</td>
-                    <td className="py-2 px-4 text-sm">{project['Testing End']}</td>
-                    <td className="py-2 px-4 text-sm">
-                      {project['Hospital Go-Live Date'] || <span className="text-gray-400">Not Set</span>}
-                    </td>
-                    <td className="py-2 px-4 text-sm">
-                      {project['OH Go-Live Date'] || <span className="text-gray-400">Not Set</span>}
-                    </td>
-                  </tr>
-                ))}
-              </tbody>
-            </table>
-            {timelineDetailProjects.length > 50 && (
-              <div className="text-center py-4 text-gray-500 text-sm">
-                Showing 50 of {timelineDetailProjects.length} projects. Use filters to narrow down results.
-              </div>
-            )}
-          </div>
+          {/* Virtualized table for better performance with large datasets */}
+          <VirtualizedTable 
+            data={timelineDetailProjects}
+            columns={tableColumns}
+            visibleRows={15}
+          />
         </div>
       ) : (
         // Charts view
@@ -198,7 +275,18 @@ const TimelinesTab: React.FC<TimelinesTabProps> = ({
           <div className="bg-white shadow rounded-lg p-6">
             <h3 className="text-lg font-medium mb-4">Daily Project Activity</h3>
             <div className="h-80">
-              {dailyActivity && dailyActivity.length > 0 ? (
+              {isCalculating ? (
+                <div className="h-full flex flex-col items-center justify-center">
+                  <div className="mb-4 text-gray-500">Calculating activity data...</div>
+                  <div className="w-64 h-4 bg-gray-200 rounded-full overflow-hidden">
+                    <div 
+                      className="h-full bg-blue-500 transition-all duration-300 ease-in-out"
+                      style={{ width: `${calculationProgress}%` }}
+                    ></div>
+                  </div>
+                  <div className="mt-2 text-sm text-gray-500">{calculationProgress}% complete</div>
+                </div>
+              ) : dailyActivity && dailyActivity.length > 0 ? (
                 <ResponsiveContainer width="100%" height="100%">
                   <LineChart
                     data={dailyActivity}
@@ -208,11 +296,9 @@ const TimelinesTab: React.FC<TimelinesTabProps> = ({
                     <XAxis 
                       dataKey="dateString" 
                       tick={{ fontSize: 10 }}
-                      tickFormatter={(tickItem) => {
-                        if (!tickItem) return '';
-                        const date = safeDate(tickItem);
-                        return date ? date.toLocaleDateString('en-US', { month: 'short', day: 'numeric' }) : '';
-                      }}
+                      tickFormatter={formatDateLabel}
+                      // Limit number of ticks for better readability
+                      interval={Math.max(1, Math.floor(dailyActivity.length / 10))}
                     />
                     <YAxis />
                     <Tooltip 
@@ -229,6 +315,9 @@ const TimelinesTab: React.FC<TimelinesTabProps> = ({
                       name="Active Projects" 
                       stroke="#0088FE" 
                       strokeWidth={2}
+                      // Optimize rendering by reducing data points if many
+                      isAnimationActive={dailyActivity.length < 90}
+                      dot={dailyActivity.length < 60}
                     />
                     <Line 
                       type="monotone" 
@@ -236,6 +325,9 @@ const TimelinesTab: React.FC<TimelinesTabProps> = ({
                       name="Active Testing Projects" 
                       stroke="#00C49F" 
                       strokeWidth={2}
+                      // Optimize rendering by reducing data points if many
+                      isAnimationActive={dailyActivity.length < 90}
+                      dot={dailyActivity.length < 60}
                     />
                   </LineChart>
                 </ResponsiveContainer>
@@ -263,7 +355,7 @@ const TimelinesTab: React.FC<TimelinesTabProps> = ({
           <div className="bg-white shadow rounded-lg p-6">
             <h3 className="text-lg font-medium mb-4">Testing Timeline Analysis</h3>
             <div className="h-64">
-              {filteredData && filteredData.length > 0 ? (
+              {scatterData && scatterData.length > 0 ? (
                 <ResponsiveContainer width="100%" height="100%">
                   <ScatterChart
                     margin={{ top: 20, right: 20, bottom: 20, left: 20 }}
@@ -286,36 +378,7 @@ const TimelinesTab: React.FC<TimelinesTabProps> = ({
                     <Legend />
                     <Scatter 
                       name="Projects" 
-                      data={filteredData
-                        .filter(d => d && safeDate(d['Testing Start']) && safeDate(d['Testing End']) && 
-                               safeDate(d['Kick-Off Date']) && safeDate(d['OH Go-Live Date']))
-                        .map(d => {
-                          try {
-                            const testingStart = safeDate(d['Testing Start']);
-                            const testingEnd = safeDate(d['Testing End']);
-                            const kickOff = safeDate(d['Kick-Off Date']);
-                            const goLive = safeDate(d['OH Go-Live Date']);
-                            
-                            if (!testingStart || !testingEnd || !kickOff || !goLive) {
-                              return null;
-                            }
-                            
-                            const testingDuration = Math.max(1, Math.round((testingEnd.getTime() - testingStart.getTime()) / (1000 * 60 * 60 * 24)));
-                            const projectDuration = Math.max(1, Math.round((goLive.getTime() - kickOff.getTime()) / (1000 * 60 * 60 * 24)));
-                            
-                            return {
-                              name: d['Project Short Name'] || 'Unnamed Project',
-                              testingDuration,
-                              projectDuration,
-                              status: d['Project Status'] || 'Unknown'
-                            };
-                          } catch (e) {
-                            console.error("Error processing project data:", e);
-                            return null;
-                          }
-                        })
-                        .filter(Boolean)
-                      } 
+                      data={scatterData} 
                       fill="#8884d8"
                     />
                   </ScatterChart>
@@ -333,4 +396,4 @@ const TimelinesTab: React.FC<TimelinesTabProps> = ({
   );
 };
 
-export default TimelinesTab;
+export default React.memo(TimelinesTab);
